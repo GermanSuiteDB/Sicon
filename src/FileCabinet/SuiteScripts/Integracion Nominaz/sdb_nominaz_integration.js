@@ -64,7 +64,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
 
         function getInputData() {
             try {
-                //get token
+                //Get token
                 let scriptObj = runtime.getCurrentScript();
                 var clientId = scriptObj.getParameter({ name: 'custscript_sdb_client_id_nominaz' });
                 var clientSecret = scriptObj.getParameter({ name: 'custscript_sdb_client_secret_nominaz' });
@@ -76,20 +76,20 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 let responseToken = postRequest(baseURL + urlToken, bodyToken);
                 let token = responseToken?.body ? JSON.parse(responseToken.body)?.response?.accessToken : null;
                 if (!token) {
-                    log.error('could not generate token', responseToken)
+                    log.error('Could not generate token', responseToken)
                     return [];
                 }
                 headers['x-api-key-nominaz'] = token;
 
-                //get employees
+                //Get employees
                 let responseEmployees = postRequest(baseURL + urlEmployees, bodyEmployees);
                 let employees = responseEmployees?.body ? JSON.parse(responseEmployees.body)?.response : null;
                 if (!employees || !employees.length) {
-                    log.error('could not obtain employee list', responseEmployees)
+                    log.error('Could not obtain employee list', responseEmployees)
                     return [];
                 }
 
-                //set date range for payments
+                //Set date range for payments
                 let useParameters = scriptObj.getParameter({ name: 'custscript_use_parameters' });
                 if (useParameters) {
                     bodyPayments.datosBusqueda["fechaDesde"] = scriptObj.getParameter({ name: 'custscript_date_from' });
@@ -104,11 +104,11 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     bodyPayments.datosBusqueda["fechaHasta"] = today;
                 }
 
-                //get payments
+                //Get payments
                 let responsePayments = postRequest(baseURL + urlPayments, bodyPayments);
                 let payments = responsePayments?.body ? JSON.parse(responsePayments.body)?.response : null;
                 if (!payments) {
-                    log.error('could not obtain payments list', responsePayments)
+                    log.error('Could not obtain payments list', responsePayments)
                     return [];
                 }
                 employees.push(payments);
@@ -140,12 +140,21 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 //search for employee
                 let firstName = data.nombre.trim();
                 let lastName = data.apellido.trim();
-                let existingId = searchEmployeeId(firstName, lastName);
+                log.debug("Employee to check", "Employee full name: " + firstName + " " + lastName);
+
+                
+                // Check if the employee exists in NetSuite using the name and lastname
+                //let existingId = searchEmployeeId(firstName, lastName);
+
+                // Check if the employee exists in NetSuite using the N° Document field
+                let existingId = existEmployee(data.documento.trim());
 
                 let employee;
                 let employeePhone = data.celular.trim() || null;
-                //create employee if it does not exist
+
+                //Create employee if it does not exist
                 if (existingId === -1) {
+                    
                     employee = record.create({
                         type: record.Type.EMPLOYEE,
                         isDynamic: true
@@ -153,12 +162,14 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     employee.setValue({
                         fieldId: 'firstname',
                         value: firstName
-                    }).setValue({
+                    });
+                    
+                    employee.setValue({
                         fieldId: 'lastname',
                         value: lastName
                     })
 
-                    //employee address
+                    //Employee address
                     let employeeAddrs1 = data.direccion.trim() || null;
                     let employeeCountry = data.paisResidencia.trim() || null;
                     let employeeCity = data.ciudadResidencia.trim() || null;
@@ -193,8 +204,8 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                         });
                         employee.commitLine({
                             sublistId: 'addressbook'
-                        });
-                    }
+                        }); 
+                    } 
                 } else {
                     employee = record.load({
                         type: record.Type.EMPLOYEE,
@@ -206,30 +217,42 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 employee.setValue({
                     fieldId: 'jobdescription',
                     value: data.cargo.trim()
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'email',
                     value: data.email.trim()
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'birthdate',
                     value: parseDate(data.fechaNacimiento.trim())
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'hiredate',
                     value: parseDate(data.fechaIngreso.trim())
-                }).setValue({
-                    fieldId: 'comments',
-                    value: `Document: ${data.documento.trim()}`
-                }).setValue({
+                });
+                
+                employee.setValue({
+                    fieldId: 'custentity_document_number_nominaz',
+                    value: `${data.documento.trim()}`
+                });
+                
+                employee.setValue({
                     fieldId: 'employeestatus',
                     value: 2
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'custentity_sdb_turno_nominaz',
                     value: data.turno.trim()
-                })
+                });
 
                 if (employeePhone) employee.setValue({
                     fieldId: 'mobilephone',
                     value: employeePhone
-                })
+                });
 
                 let gender = getGender(data.genero.trim());
                 employee.setValue({
@@ -283,10 +306,8 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 let employeeId = employee.save({
                     ignoreMandatoryFields: true
                 });
-                if (existingId === -1) log.audit('employee created', employeeId);
-                else log.audit('employee updated', employeeId);
-                // log.audit('employee created test', data.documento)
-
+                if (existingId === -1) log.audit('Employee with document ' + data.documento + ' created', employeeId);
+                else log.audit('Employee with document ' + data.documento + ' updated', employeeId);
             } catch (error) {
                 log.error({
                     title: 'Error in Map function',
@@ -330,6 +351,47 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
             let month = parseInt(parts[1], 10) - 1;
             let year = parts[0].length === 2 ? "20" + parts[0] : parts[0];
             return new Date(year, month, day);
+        }
+
+        // Check if there is an employee with N° Document = data.documento
+        function existEmployee(document) {
+            try {
+                if (!document) {
+                    const error = new Error("Document for employee is empty");
+                    error.name = "Error in existEmployee";
+                    throw error;     
+                }
+
+                let filters = [ 
+                    ["custentity_document_number_nominaz", "is", document]
+                ];
+
+                var employeeSearchObj = search.create({
+                    type: "employee",
+                    filters: filters,
+                    columns:
+                        [
+                            search.createColumn({ name: "internalid"})
+                        ]
+                });
+
+                const employeeCount = employeeSearchObj.runPaged().count;
+
+                if (employeeCount > 1) {
+                    log.audit("Duplicated document number", "There is more than one employee with the document number " + document);
+                }
+
+                let result = employeeSearchObj.run().getRange({
+                    start: 0,
+                    end: 1
+                });
+
+                return result.length ? result[0].id : -1;
+
+            } catch (error) {
+                log.error(error.name, error.message);
+                throw error;
+            }
         }
 
         function searchEmployeeId(firstName, lastName, fullName) {
