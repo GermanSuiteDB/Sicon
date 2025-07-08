@@ -88,7 +88,8 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     log.error('Could not obtain employee list', responseEmployees)
                     return [];
                 }
-
+            
+                /*
                 //Set date range for payments
                 let useParameters = scriptObj.getParameter({ name: 'custscript_use_parameters' });
                 if (useParameters) {
@@ -111,7 +112,8 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     log.error('Could not obtain payments list', responsePayments)
                     return [];
                 }
-                employees.push(payments);
+                
+                employees.push(payments); */
 
                 return employees;
             } catch (error) {
