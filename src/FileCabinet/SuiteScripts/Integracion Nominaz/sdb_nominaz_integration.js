@@ -18,13 +18,14 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
         const bodyEmployees = {
             "data": {
                 "filtros": {
-                    "estado": "A"
+                    "estado": null
                 },
                 "conceptosFiltrados": [
                     "documento",
                     "nombre",
                     "apellido",
                     "codigoIess",
+                    "estado",
                     "genero",
                     "tipoDocumento",
                     "paisResidencia",
@@ -115,6 +116,8 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 
                 employees.push(payments); */
 
+                log.debug("Employees from Nominaz", employees.length);
+
                 return employees;
             } catch (error) {
                 log.error({
@@ -127,8 +130,6 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
         function map(context) {
             try {
                 var data = JSON.parse(context.value);
-                // log.debug("map data", data);
-                if (data.documento !== '0919352740') return;
 
                 //send payment information to reduce step
                 // if (data.nomina) {
@@ -139,28 +140,29 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 //     return;
                 // }
 
-                //search for employee
                 let firstName = data.nombre.trim();
                 let lastName = data.apellido.trim();
                 log.debug("Employee to check", "Employee full name: " + firstName + " " + lastName);
 
-                
-                // Check if the employee exists in NetSuite using the name and lastname
-                //let existingId = searchEmployeeId(firstName, lastName);
-
                 // Check if the employee exists in NetSuite using the N° Document field
                 let existingId = existEmployee(data.documento.trim());
 
+                if (existingId === -1) {
+                    // Check if the employee exists in NetSuite using the name and lastname
+                    existingId = searchEmployeeIdByName(firstName, lastName);
+                }
+
                 let employee;
-                let employeePhone = data.celular.trim() || null;
+                let employeePhone = data.celular ? data.celular.trim() : null;
 
                 //Create employee if it does not exist
                 if (existingId === -1) {
-                    
+                  
                     employee = record.create({
                         type: record.Type.EMPLOYEE,
                         isDynamic: true
                     });
+
                     employee.setValue({
                         fieldId: 'firstname',
                         value: firstName
@@ -172,10 +174,19 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     })
 
                     //Employee address
-                    let employeeAddrs1 = data.direccion.trim() || null;
-                    let employeeCountry = data.paisResidencia.trim() || null;
-                    let employeeCity = data.ciudadResidencia.trim() || null;
-                    let employeeState = data.provinciaResidencia.trim() || null;
+                    let employeeAddrs1 = data.direccion ? data.direccion.trim() : null;
+                    let employeeAddrs2 = null
+                    if (data.direccion && employeeAddrs1.length > 150) {
+                        let parts = employeeAddrs1.split(/Refe\w*ncia/i);
+
+                        if (parts.length > 1) {
+                            employeeAddrs1 = parts[0];
+                            employeeAddrs2 = "REFERENCIA " + parts[1];
+                        }
+                    }
+                    let employeeCountry = data.paisResidencia ? data.paisResidencia.trim() : null;
+                    let employeeCity = data.ciudadResidencia ? data.ciudadResidencia.trim() : null;
+                    let employeeState = data.provinciaResidencia ? data.provinciaResidencia.trim() : null;
                     if (employeeAddrs1 && employeeCountry && employeeCity) {
                         employee.selectNewLine({
                             sublistId: 'addressbook'
@@ -192,6 +203,14 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                             fieldId: 'addr1',
                             value: employeeAddrs1
                         });
+
+                        if (employeeAddrs2) {
+                            employeeNewAddress.setValue({
+                                fieldId: 'addr2',
+                                value: employeeAddrs2
+                            });
+                        }
+
                         employeeNewAddress.setValue({
                             fieldId: 'city',
                             value: employeeCity
@@ -214,6 +233,20 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                         id: existingId,
                         isDynamic: true
                     })
+                }
+
+                if (employee.getValue("giveaccess")) return;
+
+                employee.setValue({
+                    fieldId: 'custentity_emp_created_with_integration',
+                    value: true
+                });
+
+                if (data.estado == "Retriado") {
+                    employee.setValue({
+                        fieldId: 'isinactive',
+                        value: true
+                    });
                 }
 
                 employee.setValue({
@@ -300,16 +333,34 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     fieldId: 'custentity_sdb_nombre_pareja_nominaz',
                     value: partnerName
                 })
-                let supervisor = searchEmployeeId(null, null, data.jefeDirecto.trim());
+
+                let hasSupervisor = employee.getValue({
+                    fieldId: "supervisor"
+                });
+
+                // Set the supervisor to null if it has supervisor in NetSuite but not in nominaz
+                if (!data.jefeDirecto && hasSupervisor) {
+                    employee.setValue({
+                        fieldId: "supervisor",
+                        value: null
+                    });
+                }
+
+                /*let supervisor = searchEmployeeId(null, null, data.jefeDirecto.trim());
                 if (supervisor !== -1) employee.setValue({
                     fieldId: 'supervisor',
                     value: supervisor
-                })
+                })*/
                 let employeeId = employee.save({
                     ignoreMandatoryFields: true
                 });
                 if (existingId === -1) log.audit('Employee with document ' + data.documento + ' created', employeeId);
                 else log.audit('Employee with document ' + data.documento + ' updated', employeeId);
+
+                // Pass the supervisor and the employee ID to the reduce to set the supervisor after all the employee creations
+                if (data.jefeDirecto) {
+                    context.write({key: data.jefeDirecto.trim(), value: employeeId});
+                }
             } catch (error) {
                 log.error({
                     title: 'Error in Map function',
@@ -320,9 +371,34 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
 
         function reduce(context) {
             try {
-                var data = JSON.parse(context.values);
-                // log.debug("reduce data", data);
 
+                var supervisorName = context.key;
+                var employees = context.values;
+
+                log.debug("Reduce for supervisor", 'Supervisor Name: "' + supervisorName + '"');
+
+
+                let supervisorId = searchEmployeeIdByName(null, null, supervisorName.trim());
+
+                log.debug("Reduce supervisor ID", supervisorId);
+
+                if (supervisorId === -1) {
+                    var error = new Error("Supervisor name: " + supervisorName);
+                    error.name = "Supervisor is not present in NetSuite or was not found by searchEmployeeIdByName"
+                    throw error;
+                }
+
+                // Set supervisor for each employee
+                employees.forEach(function (empId) {
+                    record.submitFields({
+                        type: record.Type.EMPLOYEE,
+                        id: empId,
+                        values: {
+                            supervisor: supervisorId
+                        }  
+                    });
+                });
+                
             } catch (error) {
                 log.error({
                     title: 'Error in Reduce function',
@@ -355,7 +431,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
             return new Date(year, month, day);
         }
 
-        // Check if there is an employee with N° Document = data.documento
+        // Check if there is an employee with N° Document = data.documento and returns the Id if the employee exists
         function existEmployee(document) {
             try {
                 if (!document) {
@@ -396,7 +472,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
             }
         }
 
-        function searchEmployeeId(firstName, lastName, fullName) {
+        function searchEmployeeIdByName(firstName, lastName, fullName) {
             let filters = [];
             if (fullName) {
                 fullName = fullName.split(' ');
@@ -413,11 +489,6 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     values: "T"
                 })
                 filters.push(nameFilter)
-                // filters = [
-                //     [`formulatext: CASE WHEN 
-                //         CONCAT(CONCAT({firstname}, ' '), {lastname})=
-                //         '${fullName}' THEN 'T' ELSE 'F' END`, "is", "T"]
-                // ]
             } else {
                 filters = [
                     ["firstname", "is", firstName],
@@ -495,6 +566,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
         function getPhone(phone) {
             try {
                 if (!phone) return null;
+                log.debug("Set phone", phone);
                 return phone.trim();
             } catch (error) {
                 log.error("getPhone error", error);
@@ -514,6 +586,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
             var notSpecified = null;
             try {
                 if (!coupleName || coupleName === '0') return notSpecified;
+                log.debug("Set partnerName", coupleName);
                 return coupleName.trim();
             } catch (error) {
                 log.error("getCouplesName error", error);
