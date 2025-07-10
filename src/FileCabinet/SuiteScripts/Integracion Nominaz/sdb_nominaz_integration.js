@@ -18,13 +18,14 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
         const bodyEmployees = {
             "data": {
                 "filtros": {
-                    "estado": "A"
+                    "estado": null
                 },
                 "conceptosFiltrados": [
                     "documento",
                     "nombre",
                     "apellido",
                     "codigoIess",
+                    "estado",
                     "genero",
                     "tipoDocumento",
                     "paisResidencia",
@@ -64,7 +65,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
 
         function getInputData() {
             try {
-                //get token
+                //Get token
                 let scriptObj = runtime.getCurrentScript();
                 var clientId = scriptObj.getParameter({ name: 'custscript_sdb_client_id_nominaz' });
                 var clientSecret = scriptObj.getParameter({ name: 'custscript_sdb_client_secret_nominaz' });
@@ -76,20 +77,21 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 let responseToken = postRequest(baseURL + urlToken, bodyToken);
                 let token = responseToken?.body ? JSON.parse(responseToken.body)?.response?.accessToken : null;
                 if (!token) {
-                    log.error('could not generate token', responseToken)
+                    log.error('Could not generate token', responseToken)
                     return [];
                 }
                 headers['x-api-key-nominaz'] = token;
 
-                //get employees
+                //Get employees
                 let responseEmployees = postRequest(baseURL + urlEmployees, bodyEmployees);
                 let employees = responseEmployees?.body ? JSON.parse(responseEmployees.body)?.response : null;
                 if (!employees || !employees.length) {
-                    log.error('could not obtain employee list', responseEmployees)
+                    log.error('Could not obtain employee list', responseEmployees)
                     return [];
                 }
-
-                //set date range for payments
+            
+                /*
+                //Set date range for payments
                 let useParameters = scriptObj.getParameter({ name: 'custscript_use_parameters' });
                 if (useParameters) {
                     bodyPayments.datosBusqueda["fechaDesde"] = scriptObj.getParameter({ name: 'custscript_date_from' });
@@ -104,14 +106,17 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     bodyPayments.datosBusqueda["fechaHasta"] = today;
                 }
 
-                //get payments
+                //Get payments
                 let responsePayments = postRequest(baseURL + urlPayments, bodyPayments);
                 let payments = responsePayments?.body ? JSON.parse(responsePayments.body)?.response : null;
                 if (!payments) {
-                    log.error('could not obtain payments list', responsePayments)
+                    log.error('Could not obtain payments list', responsePayments)
                     return [];
                 }
-                employees.push(payments);
+                
+                employees.push(payments); */
+
+                log.debug("Employees from Nominaz", employees.length);
 
                 return employees;
             } catch (error) {
@@ -125,8 +130,6 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
         function map(context) {
             try {
                 var data = JSON.parse(context.value);
-                // log.debug("map data", data);
-                if (data.documento !== '0919352740') return;
 
                 //send payment information to reduce step
                 // if (data.nomina) {
@@ -137,32 +140,53 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                 //     return;
                 // }
 
-                //search for employee
                 let firstName = data.nombre.trim();
                 let lastName = data.apellido.trim();
-                let existingId = searchEmployeeId(firstName, lastName);
+                log.debug("Employee to check", "Employee full name: " + firstName + " " + lastName);
+
+                // Check if the employee exists in NetSuite using the N° Document field
+                let existingId = existEmployee(data.documento.trim());
+
+                if (existingId === -1) {
+                    // Check if the employee exists in NetSuite using the name and lastname
+                    existingId = searchEmployeeIdByName(firstName, lastName);
+                }
 
                 let employee;
-                let employeePhone = data.celular.trim() || null;
-                //create employee if it does not exist
+                let employeePhone = data.celular ? data.celular.trim() : null;
+
+                //Create employee if it does not exist
                 if (existingId === -1) {
+                  
                     employee = record.create({
                         type: record.Type.EMPLOYEE,
                         isDynamic: true
                     });
+
                     employee.setValue({
                         fieldId: 'firstname',
                         value: firstName
-                    }).setValue({
+                    });
+                    
+                    employee.setValue({
                         fieldId: 'lastname',
                         value: lastName
                     })
 
-                    //employee address
-                    let employeeAddrs1 = data.direccion.trim() || null;
-                    let employeeCountry = data.paisResidencia.trim() || null;
-                    let employeeCity = data.ciudadResidencia.trim() || null;
-                    let employeeState = data.provinciaResidencia.trim() || null;
+                    //Employee address
+                    let employeeAddrs1 = data.direccion ? data.direccion.trim() : null;
+                    let employeeAddrs2 = null
+                    if (data.direccion && employeeAddrs1.length > 150) {
+                        let parts = employeeAddrs1.split(/Refe\w*ncia/i);
+
+                        if (parts.length > 1) {
+                            employeeAddrs1 = parts[0];
+                            employeeAddrs2 = "REFERENCIA " + parts[1];
+                        }
+                    }
+                    let employeeCountry = data.paisResidencia ? data.paisResidencia.trim() : null;
+                    let employeeCity = data.ciudadResidencia ? data.ciudadResidencia.trim() : null;
+                    let employeeState = data.provinciaResidencia ? data.provinciaResidencia.trim() : null;
                     if (employeeAddrs1 && employeeCountry && employeeCity) {
                         employee.selectNewLine({
                             sublistId: 'addressbook'
@@ -179,6 +203,14 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                             fieldId: 'addr1',
                             value: employeeAddrs1
                         });
+
+                        if (employeeAddrs2) {
+                            employeeNewAddress.setValue({
+                                fieldId: 'addr2',
+                                value: employeeAddrs2
+                            });
+                        }
+
                         employeeNewAddress.setValue({
                             fieldId: 'city',
                             value: employeeCity
@@ -193,8 +225,8 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                         });
                         employee.commitLine({
                             sublistId: 'addressbook'
-                        });
-                    }
+                        }); 
+                    } 
                 } else {
                     employee = record.load({
                         type: record.Type.EMPLOYEE,
@@ -203,33 +235,59 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     })
                 }
 
+                if (employee.getValue("giveaccess")) return;
+
+                employee.setValue({
+                    fieldId: 'custentity_emp_created_with_integration',
+                    value: true
+                });
+
+                if (data.estado == "Retriado") {
+                    employee.setValue({
+                        fieldId: 'isinactive',
+                        value: true
+                    });
+                }
+
                 employee.setValue({
                     fieldId: 'jobdescription',
                     value: data.cargo.trim()
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'email',
                     value: data.email.trim()
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'birthdate',
                     value: parseDate(data.fechaNacimiento.trim())
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'hiredate',
                     value: parseDate(data.fechaIngreso.trim())
-                }).setValue({
-                    fieldId: 'comments',
-                    value: `Document: ${data.documento.trim()}`
-                }).setValue({
+                });
+                
+                employee.setValue({
+                    fieldId: 'custentity_document_number_nominaz',
+                    value: `${data.documento.trim()}`
+                });
+                
+                employee.setValue({
                     fieldId: 'employeestatus',
                     value: 2
-                }).setValue({
+                });
+                
+                employee.setValue({
                     fieldId: 'custentity_sdb_turno_nominaz',
                     value: data.turno.trim()
-                })
+                });
 
                 if (employeePhone) employee.setValue({
                     fieldId: 'mobilephone',
                     value: employeePhone
-                })
+                });
 
                 let gender = getGender(data.genero.trim());
                 employee.setValue({
@@ -275,18 +333,34 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     fieldId: 'custentity_sdb_nombre_pareja_nominaz',
                     value: partnerName
                 })
-                let supervisor = searchEmployeeId(null, null, data.jefeDirecto.trim());
+
+                let hasSupervisor = employee.getValue({
+                    fieldId: "supervisor"
+                });
+
+                // Set the supervisor to null if it has supervisor in NetSuite but not in nominaz
+                if (!data.jefeDirecto && hasSupervisor) {
+                    employee.setValue({
+                        fieldId: "supervisor",
+                        value: null
+                    });
+                }
+
+                /*let supervisor = searchEmployeeId(null, null, data.jefeDirecto.trim());
                 if (supervisor !== -1) employee.setValue({
                     fieldId: 'supervisor',
                     value: supervisor
-                })
+                })*/
                 let employeeId = employee.save({
                     ignoreMandatoryFields: true
                 });
-                if (existingId === -1) log.audit('employee created', employeeId);
-                else log.audit('employee updated', employeeId);
-                // log.audit('employee created test', data.documento)
+                if (existingId === -1) log.audit('Employee with document ' + data.documento + ' created', employeeId);
+                else log.audit('Employee with document ' + data.documento + ' updated', employeeId);
 
+                // Pass the supervisor and the employee ID to the reduce to set the supervisor after all the employee creations
+                if (data.jefeDirecto) {
+                    context.write({key: data.jefeDirecto.trim(), value: employeeId});
+                }
             } catch (error) {
                 log.error({
                     title: 'Error in Map function',
@@ -297,9 +371,34 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
 
         function reduce(context) {
             try {
-                var data = JSON.parse(context.values);
-                // log.debug("reduce data", data);
 
+                var supervisorName = context.key;
+                var employees = context.values;
+
+                log.debug("Reduce for supervisor", 'Supervisor Name: "' + supervisorName + '"');
+
+
+                let supervisorId = searchEmployeeIdByName(null, null, supervisorName.trim());
+
+                log.debug("Reduce supervisor ID", supervisorId);
+
+                if (supervisorId === -1) {
+                    var error = new Error("Supervisor name: " + supervisorName);
+                    error.name = "Supervisor is not present in NetSuite or was not found by searchEmployeeIdByName"
+                    throw error;
+                }
+
+                // Set supervisor for each employee
+                employees.forEach(function (empId) {
+                    record.submitFields({
+                        type: record.Type.EMPLOYEE,
+                        id: empId,
+                        values: {
+                            supervisor: supervisorId
+                        }  
+                    });
+                });
+                
             } catch (error) {
                 log.error({
                     title: 'Error in Reduce function',
@@ -332,7 +431,48 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
             return new Date(year, month, day);
         }
 
-        function searchEmployeeId(firstName, lastName, fullName) {
+        // Check if there is an employee with N° Document = data.documento and returns the Id if the employee exists
+        function existEmployee(document) {
+            try {
+                if (!document) {
+                    const error = new Error("Document for employee is empty");
+                    error.name = "Error in existEmployee";
+                    throw error;     
+                }
+
+                let filters = [ 
+                    ["custentity_document_number_nominaz", "is", document]
+                ];
+
+                var employeeSearchObj = search.create({
+                    type: "employee",
+                    filters: filters,
+                    columns:
+                        [
+                            search.createColumn({ name: "internalid"})
+                        ]
+                });
+
+                const employeeCount = employeeSearchObj.runPaged().count;
+
+                if (employeeCount > 1) {
+                    log.audit("Duplicated document number", "There is more than one employee with the document number " + document);
+                }
+
+                let result = employeeSearchObj.run().getRange({
+                    start: 0,
+                    end: 1
+                });
+
+                return result.length ? result[0].id : -1;
+
+            } catch (error) {
+                log.error(error.name, error.message);
+                throw error;
+            }
+        }
+
+        function searchEmployeeIdByName(firstName, lastName, fullName) {
             let filters = [];
             if (fullName) {
                 fullName = fullName.split(' ');
@@ -349,11 +489,6 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
                     values: "T"
                 })
                 filters.push(nameFilter)
-                // filters = [
-                //     [`formulatext: CASE WHEN 
-                //         CONCAT(CONCAT({firstname}, ' '), {lastname})=
-                //         '${fullName}' THEN 'T' ELSE 'F' END`, "is", "T"]
-                // ]
             } else {
                 filters = [
                     ["firstname", "is", firstName],
@@ -431,6 +566,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
         function getPhone(phone) {
             try {
                 if (!phone) return null;
+                log.debug("Set phone", phone);
                 return phone.trim();
             } catch (error) {
                 log.error("getPhone error", error);
@@ -450,6 +586,7 @@ define(['N/search', 'N/record', 'N/https', 'N/runtime'],
             var notSpecified = null;
             try {
                 if (!coupleName || coupleName === '0') return notSpecified;
+                log.debug("Set partnerName", coupleName);
                 return coupleName.trim();
             } catch (error) {
                 log.error("getCouplesName error", error);
